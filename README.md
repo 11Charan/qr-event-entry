@@ -1,95 +1,161 @@
 # QR Event Entry Backend
 
-Production-oriented event check-in backend for Google Forms and Google Sheets registrations. It uses server-verified QR bearer tokens, a real database, RBAC for admin/scanner roles, transactional check-in, and auditable scan/check-in history.
+QR-based event entry backend built with Fastify, Prisma, SQLite, Google Sheets sync, and SMTP email delivery.
+
+The intended local flow is:
+
+1. registrations land in Google Sheets
+2. the app polls the sheet
+3. new rows become registrants and tickets
+4. a QR code is generated
+5. the QR is emailed to the registrant
+6. scanners validate and consume the QR at entry
+
+## What This Project Does
+
+- Syncs registrants from Google Sheets
+- Creates one ticket per registrant
+- Generates a QR token for each active ticket
+- Emails the QR code to the registrant through SMTP
+- Supports QR validation and check-in
+- Stores audit logs for login, sync, QR issuance, and check-in
 
 ## Stack
 
-- Node.js 22
+- Node.js 22+
 - TypeScript
 - Fastify
-- Prisma ORM
+- Prisma
 - SQLite for local development
-- PostgreSQL-ready schema design for production migration
+- Google Sheets API
+- Nodemailer for SMTP delivery
 
-## Security Model
+## Local Setup
 
-The QR payload does not contain personal data or a guessable sequential ID. Each QR contains a high-entropy random bearer token with a versioned prefix such as `evtqr_v1.<random>`. The raw token is only shown once to the user or downstream sender. The database stores only a SHA-256 hash of the token, so a database read does not directly expose valid gate credentials.
-
-Server-side verification determines whether the token exists, belongs to the correct event, is still active, and has not already been consumed. Check-in is completed inside a database transaction with an atomic update guard on `checkedInAt`, which blocks duplicate entry caused by concurrent scans from multiple devices.
-
-This is tamper-resistant and abuse-resistant, not magically unbreakable. If someone steals a valid QR image before entry, they can still present it first. Real events should combine server-side validation with operational controls such as staff-authenticated scanners, optional name or ID verification, and HTTPS-only deployment.
-
-## Features
-
-- Google Sheets registration sync through service account credentials
-- Incremental row processing with sync cursor state
-- Multi-event support
-- Ticket types, guest categories, and tags such as VIP or staff
-- QR issue, revoke, and reissue workflows
-- Scanner and admin JWT login
-- RBAC for `ADMIN` and `SCANNER`
-- Manual lookup and manual check-in flow
-- Audit logs for login, sync, scan validation, QR issuance, revocation, and check-in
-- Rate limiting and input validation
-- Swagger docs at `/docs`
-- Test coverage for critical anti-replay flows
-
-## Project Structure
-
-```text
-.
-├── prisma/
-│   ├── schema.prisma
-│   └── seed.ts
-├── src/
-│   ├── app.ts
-│   ├── server.ts
-│   ├── config/
-│   ├── modules/
-│   │   ├── audit/
-│   │   ├── auth/
-│   │   ├── checkins/
-│   │   ├── events/
-│   │   ├── registrants/
-│   │   ├── sync/
-│   │   └── tickets/
-│   ├── routes/
-│   ├── types/
-│   └── utils/
-├── tests/
-├── Dockerfile
-└── docker-compose.yml
-```
-
-## Setup
-
-1. Copy `.env.example` to `.env`.
-2. Set `JWT_SECRET` to a long random value.
-3. For Google Sheets, create a Google Cloud service account, enable the Sheets API, and share the target sheet with the service account email.
-4. Install dependencies:
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-5. Generate Prisma client and create the local database:
+### 2. Create your environment file
+
+Copy `.env.example` to `.env` and fill it in.
+
+At minimum, these values matter:
+
+```env
+NODE_ENV=development
+PORT=3000
+DATABASE_URL="file:./dev.db"
+JWT_SECRET=change-me-to-a-long-random-secret
+DEFAULT_EVENT_SLUG=your-event-slug
+
+GOOGLE_SHEETS_ENABLED=true
+GOOGLE_SHEETS_SPREADSHEET_ID=your-spreadsheet-id
+GOOGLE_SHEETS_RANGE=Form Responses 1!A:Z
+GOOGLE_SHEETS_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+GOOGLE_SHEETS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_SHEETS_POLL_INTERVAL_MS=5000
+
+EMAIL_ENABLED=true
+EMAIL_FROM=you@gmail.com
+EMAIL_REPLY_TO=you@gmail.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=you@gmail.com
+SMTP_PASS=your-google-app-password
+```
+
+Notes:
+
+- `DEFAULT_EVENT_SLUG` must exist in the database.
+- `SMTP_SECURE=false` is correct for Gmail on port `587`.
+- `SMTP_PASS` must be a Gmail app password, not your normal Gmail password.
+- `GOOGLE_SHEETS_POLL_INTERVAL_MS=5000` is useful for testing. Increase it later if needed.
+
+### 3. Create the database
 
 ```bash
 npx prisma db push
+```
+
+### 4. Build the project
+
+```bash
+npm run build
+```
+
+### 5. Seed the local database
+
+This creates:
+
+- the event using `DEFAULT_EVENT_SLUG`
+- an admin user
+- a scanner user
+
+Preferred:
+
+```bash
 npm run seed
 ```
 
-6. Start the API:
+If `tsx` causes issues in your environment, use the compiled seed instead:
+
+```bash
+node dist/prisma/seed.js
+```
+
+### 6. Start the API
+
+For the most stable local run:
+
+```bash
+npm start
+```
+
+For watch mode during development:
 
 ```bash
 npm run dev
 ```
 
-Swagger UI will be available at `http://localhost:3000/docs`.
+Swagger UI:
 
-## Google Sheets Expectations
+```text
+http://localhost:3000/docs
+```
 
-The current parser is configured for this real header set:
+Health endpoint:
+
+```text
+http://localhost:3000/health
+```
+
+## Seeded Users
+
+- `admin@example.com` / `ChangeMe123!`
+- `scanner@example.com` / `ChangeMe123!`
+
+These are for local development only.
+
+## Google Sheets Setup
+
+### Required Google Cloud setup
+
+1. Create a Google Cloud project.
+2. Enable the Google Sheets API.
+3. Create a service account.
+4. Download the service account credentials or copy the private key fields.
+5. Put the service account email and private key into `.env`.
+6. Share the Google Sheet with the service account email.
+
+If the sheet is not shared with the service account, syncing will fail.
+
+### Expected sheet headers
+
+The parser currently expects these columns:
 
 1. `Timestamp`
 2. `Email Address`
@@ -105,54 +171,178 @@ The current parser is configured for this real header set:
 12. `Email Sent`
 13. `Sent At`
 
-Mapping behavior:
+Current mapping:
 
 - `fullName` comes from `Full Name`
-- `email` comes from the first `Email Address` match
+- `email` comes from the first `Email Address`
 - `phone` comes from `Phone Number`
 - `ticketType` defaults to `standard`
-- `guestCategory` becomes `workshop` if the workshop column contains `yes`, otherwise `attendee`
-- `tags` are derived from organization, field of study, study level, AI/cloud experience, workshop interest, and referral source
+- `guestCategory` becomes `workshop` when the workshop column contains `yes`, otherwise `attendee`
+- `tags` are built from organization, study info, workshop interest, and referral source
 
-If your form headers change again, update [google-sheets-provider.ts](/Users/sricharan/QR Event Entry/src/modules/sync/google-sheets-provider.ts).
+If your form headers change, update [google-sheets-provider.ts](/Users/sricharan/QR%20Event%20Entry/src/modules/sync/google-sheets-provider.ts).
 
-Sample files are included for testing:
+### Sample files
 
 - [google-sheet-sample.csv](/Users/sricharan/QR%20Event%20Entry/samples/google-sheet-sample.csv)
 - [google-form-responses-example.csv](/Users/sricharan/QR%20Event%20Entry/samples/google-form-responses-example.csv)
 
-To test quickly with Google Sheets:
+## Email Setup
 
-1. Create a new Google Sheet.
-2. Import [google-sheet-sample.csv](/Users/sricharan/QR%20Event%20Entry/samples/google-sheet-sample.csv).
-3. Name the tab `Form Responses 1` or update `GOOGLE_SHEETS_RANGE` in `.env`.
-4. Share the sheet with your service account email.
-5. Run the sync endpoint.
+The app sends QR emails automatically for new synced rows when:
 
-To test without Google APIs, copy rows directly from Google Sheets and send them to the dev import endpoint:
+- `EMAIL_ENABLED=true`
+- SMTP settings are valid
+- the registrant row has a valid email address
+- the ticket has an active QR token
+
+### Gmail SMTP settings
+
+For Gmail, use:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+```
+
+Requirements:
+
+- 2-Step Verification must be enabled on the Gmail account
+- `SMTP_PASS` must be a Google app password
+- `EMAIL_FROM` should match the Gmail account or a valid alias
+
+### What the email contains
+
+- Subject: `<Event Name> entry QR code`
+- Plain text fallback
+- HTML body with the QR shown inline
+- PNG attachment named `event-entry-qr.png`
+
+## First End-to-End Local Test
+
+Use this exact order.
+
+### 1. Start the server
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/dev/import-sheet-rows \
-  -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d @payload.json
+npm start
 ```
 
-Where `payload.json` contains the tab-separated header row and data rows copied from the sheet:
+### 2. Confirm startup
 
-```json
-{
-  "eventSlug": "sample-2026",
-  "rowsText": "Timestamp\tEmail Address\tFull Name\tEmail Address\tPhone Number\tUniversity / Organization Name\tField of Study / Stream(If Student)\tHighest Level of Study\tDo you have prior experience in AI/Cloud?\tWould you like to participate in the workshop?\tHow did you hear about this event?\tEmail Sent\tSent At\n4/6/2026 10:00:00\talice@example.com\tAlice Johnson\talice@example.com\t+491701112233\tOpenAI University\tCSE\tUndergraduate\tYes\tYes\tInstagram\t\t"
-}
+You should see logs showing the server is listening.
+
+If you see:
+
+```text
+Event not found
 ```
 
-## Default Seed Users
+then your `DEFAULT_EVENT_SLUG` does not exist in the database. Run:
 
-- `admin@example.com` / `ChangeMe123!`
-- `scanner@example.com` / `ChangeMe123!`
+```bash
+npx prisma db push
+npm run build
+node dist/prisma/seed.js
+```
 
-Change both immediately outside local development.
+Then restart the server.
+
+### 3. Add a new row to the Google Sheet
+
+Add a brand-new row with:
+
+- a real name in `Full Name`
+- a real email in `Email Address`
+
+Do not reuse an existing row number. The sync logic treats new entries by sheet row number.
+
+### 4. Wait for the poller
+
+If `GOOGLE_SHEETS_POLL_INTERVAL_MS=5000`, wait about 5 seconds.
+
+### 5. Check the logs
+
+A successful run looks like:
+
+```text
+processed: 1
+skipped: 0
+emailsAttempted: 1
+emailsSent: 1
+emailFailures: 0
+```
+
+### 6. Check the email inbox
+
+Also check Spam.
+
+### 7. Verify in Prisma if needed
+
+```bash
+npx prisma studio
+```
+
+Check:
+
+- `Registrant`
+- `Ticket`
+- `QrToken`
+
+If email was sent successfully, `QrToken.emailedAt` will be populated.
+
+## Common Problems
+
+### Event not found
+
+Cause:
+
+- `DEFAULT_EVENT_SLUG` in `.env` does not exist in the DB
+
+Fix:
+
+```bash
+npx prisma db push
+npm run build
+node dist/prisma/seed.js
+```
+
+### Google Sheets sync is not picking up rows
+
+Check:
+
+- `GOOGLE_SHEETS_ENABLED=true`
+- sheet is shared with the service account email
+- `GOOGLE_SHEETS_SPREADSHEET_ID` is correct
+- `GOOGLE_SHEETS_RANGE` matches the tab name
+- the added row is below the last synced row
+
+### Email failures with `wrong version number`
+
+Cause:
+
+- TLS mode does not match the SMTP port
+
+Correct Gmail config:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+```
+
+### Email auth failures
+
+Check:
+
+- Gmail 2-Step Verification is enabled
+- `SMTP_PASS` is an app password
+- `SMTP_USER` and `EMAIL_FROM` are aligned
+
+### Emails fail for one specific row
+
+Check the email address in the sheet. If the row contains something invalid like `vv`, the send will fail for that row.
 
 ## API Summary
 
@@ -163,6 +353,8 @@ Change both immediately outside local development.
 ### Sync
 
 - `POST /api/v1/sync/google-sheets`
+- `POST /api/v1/dev/load-sample-registrants`
+- `POST /api/v1/dev/import-sheet-rows`
 
 ### Ticket and QR
 
@@ -183,66 +375,60 @@ Change both immediately outside local development.
 - `GET /api/v1/audit`
 - `GET /api/v1/checkins/export`
 
-## Example cURL
+## Useful Commands
 
-Login:
-
-```bash
-curl -X POST http://localhost:3000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"ChangeMe123!"}'
-```
-
-Manual Google Sheets sync:
+Install dependencies:
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/sync/google-sheets \
-  -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"eventSlug":"sample-2026"}'
+npm install
 ```
 
-Issue a QR:
+Apply schema:
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/tickets/issue-qr \
-  -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"ticketId":"<TICKET_ID>"}'
+npx prisma db push
 ```
 
-Validate a scan:
+Generate Prisma client:
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/scans/validate \
-  -H "Authorization: Bearer <SCANNER_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"qrPayload":"evtqr_v1.<TOKEN>","eventSlug":"sample-2026","scannerDeviceId":"gate-a"}'
+npx prisma generate
 ```
 
-Consume a check-in:
+Seed local DB:
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/checkins/scan \
-  -H "Authorization: Bearer <SCANNER_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"qrPayload":"evtqr_v1.<TOKEN>","eventSlug":"sample-2026","scannerDeviceId":"gate-a"}'
+npm run seed
 ```
 
-## Operational Recommendations
+Build:
 
-- Require staff-authenticated scanner devices. Do not allow anonymous validation clients.
-- Serve the API over HTTPS only. QR tokens are bearer credentials.
-- Separate admin and scanner accounts with least privilege.
-- Add anomaly alerting for repeated invalid scans from the same device or IP.
-- Consider optional name or photo ID verification for higher-risk events.
-- Use PostgreSQL in production and managed backups.
-- Rotate JWT and QR token secrets operationally. The QR format is versioned to support this.
-- If you need offline scanning later, treat it as a separate trust model with short-lived signed scan sessions and reconciliation.
+```bash
+npm run build
+```
+
+Run tests:
+
+```bash
+npm test
+```
+
+Open Prisma Studio:
+
+```bash
+npx prisma studio
+```
+
+## Security Notes
+
+- QR codes are bearer credentials. Serve the app over HTTPS outside local development.
+- Keep `JWT_SECRET`, Google credentials, and SMTP credentials out of source control.
+- Do not use local seed users in production.
+- If someone copies a QR before entry, whoever presents it first can still use it.
 
 ## Limitations
 
-- A copied QR can still be used by whoever reaches the gate first.
-- Full offline-safe verification is not implemented in this MVP.
-- QR delivery email is sent through SMTP when `EMAIL_ENABLED=true` and the SMTP settings are configured.
-- The Google Sheets mapping is intentionally explicit and may need adjustment for your exact form columns.
+- Syncing is incremental by sheet row number, not by arbitrary edits to old rows.
+- Editing an already-synced row does not automatically resend a QR email.
+- Offline-safe verification is not implemented.
+- The Google Sheets parser is intentionally tied to a specific form structure.
