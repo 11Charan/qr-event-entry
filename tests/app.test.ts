@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FastifyInstance } from "fastify";
 import { PrismaClient, UserRole } from "@prisma/client";
 import { buildTestApp, loginAs, setupTestDatabase } from "./helpers";
+import { deliverPendingQrEmails } from "../src/modules/email/qr-email-service";
 import { syncRegistrantsFromSource } from "../src/modules/sync/sync-service";
 import { revokeQrToken } from "../src/modules/tickets/qr-service";
 import { RegistrationSource } from "../src/modules/sync/google-sheets-provider";
@@ -197,6 +198,8 @@ describe("QR event backend", () => {
   });
 
   it("polls new sheet entries and auto-issues QR codes for them", async () => {
+    process.env.EMAIL_ENABLED = "true";
+
     class MutableRegistrationSource implements RegistrationSource {
       rows: Array<Record<string, string | number | undefined>> = [];
 
@@ -247,5 +250,35 @@ describe("QR event backend", () => {
     expect(await prisma.qrToken.count()).toBe(1);
 
     stopPolling();
+    process.env.EMAIL_ENABLED = "false";
+  });
+
+  it("emails active QR tokens that have not been delivered yet", async () => {
+    process.env.EMAIL_ENABLED = "true";
+
+    await syncRegistrantsFromSource(prisma, new FakeRegistrationSource([
+      { rowNumber: 2, fullName: "Email User", email: "email-user@example.com" },
+    ]), "sample-2026");
+
+    const sentTo: string[] = [];
+    const result = await deliverPendingQrEmails(
+      prisma,
+      { eventSlug: "sample-2026" },
+      async (input) => {
+        sentTo.push(input.email);
+      },
+    );
+
+    const qrToken = await prisma.qrToken.findFirstOrThrow({
+      where: { emailedAt: { not: null } },
+    });
+
+    expect(result.attempted).toBe(1);
+    expect(result.sent).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(sentTo).toEqual(["email-user@example.com"]);
+    expect(qrToken.emailedAt).toBeTruthy();
+
+    process.env.EMAIL_ENABLED = "false";
   });
 });

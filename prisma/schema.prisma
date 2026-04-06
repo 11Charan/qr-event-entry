@@ -109,6 +109,7 @@ model QrToken {
   tokenVersion         Int        @default(1)
   status               QrStatus   @default(ACTIVE)
   issuedAt             DateTime   @default(now())
+  emailedAt            DateTime?
   revokedAt            DateTime?
   revokedReason        String?
   replacedByTokenId    String?

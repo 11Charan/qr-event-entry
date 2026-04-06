@@ -244,5 +244,5 @@ curl -X POST http://localhost:3000/api/v1/checkins/scan \
 
 - A copied QR can still be used by whoever reaches the gate first.
 - Full offline-safe verification is not implemented in this MVP.
-- Email delivery is a placeholder. Integrate SES, Resend, SendGrid, or similar for production QR delivery.
+- QR delivery email is sent through SMTP when `EMAIL_ENABLED=true` and the SMTP settings are configured.
 - The Google Sheets mapping is intentionally explicit and may need adjustment for your exact form columns.

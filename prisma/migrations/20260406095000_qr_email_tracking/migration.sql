@@ -1,0 +1,1 @@
+ALTER TABLE "QrToken" ADD COLUMN "emailedAt" DATETIME;

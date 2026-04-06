@@ -20,6 +20,14 @@ const envSchema = z.object({
   GOOGLE_SHEETS_PRIVATE_KEY: z.string().optional().default(""),
   GOOGLE_SHEETS_POLL_INTERVAL_MS: z.coerce.number().default(60000),
   GOOGLE_SHEETS_ENABLED: z.coerce.boolean().default(false),
+  EMAIL_ENABLED: z.coerce.boolean().default(false),
+  EMAIL_FROM: z.string().default("noreply@example.com"),
+  EMAIL_REPLY_TO: z.string().optional().default(""),
+  SMTP_HOST: z.string().optional().default(""),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_SECURE: z.coerce.boolean().default(false),
+  SMTP_USER: z.string().optional().default(""),
+  SMTP_PASS: z.string().optional().default(""),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

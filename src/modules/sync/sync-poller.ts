@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { FastifyBaseLogger } from "fastify";
 import { AppEnv } from "../../config/env";
+import { deliverPendingQrEmails } from "../email/qr-email-service";
 import { syncRegistrantsFromSource } from "./sync-service";
 import { GoogleSheetsRegistrationSource, RegistrationSource } from "./google-sheets-provider";
 
@@ -32,12 +33,18 @@ export function startGoogleSheetsSyncPolling(options: SyncPollerOptions) {
         source,
         options.config.DEFAULT_EVENT_SLUG,
       );
+      const emailResult = await deliverPendingQrEmails(options.prisma, {
+        eventSlug: options.config.DEFAULT_EVENT_SLUG,
+      });
 
-      if (result.processed > 0 || result.skipped > 0) {
+      if (result.processed > 0 || result.skipped > 0 || emailResult.sent > 0 || emailResult.failed > 0) {
         options.logger.info({
           processed: result.processed,
           skipped: result.skipped,
           lastRowNumber: result.lastRowNumber,
+          emailsAttempted: emailResult.attempted,
+          emailsSent: emailResult.sent,
+          emailFailures: emailResult.failed,
         }, "Completed Google Sheets sync tick");
       }
     } catch (error) {
