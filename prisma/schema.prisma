@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SCANNER
+}
+
+enum TicketStatus {
+  ACTIVE
+  REVOKED
+  CANCELLED
+}
+
+enum QrStatus {
+  ACTIVE
+  REVOKED
+  REPLACED
+}
+
+enum AuditAction {
+  REGISTRANT_SYNCED
+  QR_ISSUED
+  QR_REVOKED
+  QR_REISSUED
+  SCAN_VALIDATION
+  CHECKIN_SUCCESS
+  CHECKIN_DUPLICATE
+  CHECKIN_REJECTED
+  MANUAL_CHECKIN
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  INFO
+}
+
+model Event {
+  id                  String       @id @default(cuid())
+  slug                String       @unique
+  name                String
+  startsAt            DateTime?
+  endsAt              DateTime?
+  venue               String?
+  capacity            Int?
+  allowReentry        Boolean      @default(false)
+  isActive            Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  registrants         Registrant[]
+  tickets             Ticket[]
+  checkins            CheckIn[]
+}
+
+model Registrant {
+  id                   String      @id @default(cuid())
+  eventId              String
+  sheetRowRef          String
+  sheetRowNumber       Int?
+  responseTimestamp    DateTime?
+  fullName             String
+  email                String
+  phone                String?
+  guestCategory        String?
+  tags                 String?
+  rawDataJson          String?
+  syncChecksum         String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  event                Event       @relation(fields: [eventId], references: [id])
+  ticket               Ticket?
+
+  @@unique([eventId, sheetRowRef])
+  @@index([email])
+}
+
+model Ticket {
+  id                   String       @id @default(cuid())
+  eventId              String
+  registrantId         String       @unique
+  ticketType           String       @default("standard")
+  ticketStatus         TicketStatus @default(ACTIVE)
+  checkedInAt          DateTime?
+  checkedInByUserId    String?
+  checkInNotes         String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  event                Event        @relation(fields: [eventId], references: [id])
+  registrant           Registrant   @relation(fields: [registrantId], references: [id])
+  qrTokens             QrToken[]
+  checkins             CheckIn[]
+
+  @@index([eventId, ticketStatus])
+}
+
+model QrToken {
+  id                   String     @id @default(cuid())
+  ticketId             String
+  tokenHash            String     @unique
+  tokenVersion         Int        @default(1)
+  status               QrStatus   @default(ACTIVE)
+  issuedAt             DateTime   @default(now())
+  revokedAt            DateTime?
+  revokedReason        String?
+  replacedByTokenId    String?
+  payload              String
+  qrImageDataUrl       String?
+  createdByUserId      String?
+  ticket               Ticket     @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId, status])
+}
+
+model CheckIn {
+  id                   String     @id @default(cuid())
+  ticketId             String
+  eventId              String
+  qrTokenId            String?
+  checkedInAt          DateTime   @default(now())
+  scannedByUserId      String?
+  scannerDeviceId      String?
+  method               String
+  result               String
+  notes                String?
+  ticket               Ticket     @relation(fields: [ticketId], references: [id])
+  event                Event      @relation(fields: [eventId], references: [id])
+
+  @@index([ticketId, checkedInAt])
+  @@index([eventId, checkedInAt])
+}
+
+model User {
+  id                   String     @id @default(cuid())
+  email                String     @unique
+  passwordHash         String
+  fullName             String
+  role                 UserRole
+  isActive             Boolean    @default(true)
+  lastLoginAt          DateTime?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+}
+
+model AuditLog {
+  id                   String       @id @default(cuid())
+  eventId              String?
+  ticketId             String?
+  registrantId         String?
+  userId               String?
+  action               AuditAction
+  outcome              AuditOutcome
+  message              String
+  metadataJson         String?
+  ipAddress            String?
+  createdAt            DateTime     @default(now())
+
+  @@index([eventId, createdAt])
+  @@index([ticketId, createdAt])
+  @@index([action, createdAt])
+}
+
+model SyncState {
+  id                   String     @id
+  lastSheetRowNumber   Int        @default(0)
+  lastSyncedAt         DateTime?
+  cursorMetadataJson   String?
+}

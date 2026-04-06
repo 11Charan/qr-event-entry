@@ -1,0 +1,6 @@
+Timestamp,Full Name,Email,Phone,Ticket Type,Guest Category,Tags
+2026-04-06T09:00:00Z,Alice Johnson,alice.johnson@example.com,+491701112233,VIP,Speaker,"vip,speaker"
+2026-04-06T09:02:00Z,Bob Smith,bob.smith@example.com,+491701112244,Standard,Guest,"standard"
+2026-04-06T09:05:00Z,Carla Mendes,carla.mendes@example.com,+491701112255,Staff,Organizer,"staff,crew"
+2026-04-06T09:08:00Z,David Lee,david.lee@example.com,+491701112266,Standard,Attendee,"standard"
+2026-04-06T09:12:00Z,Emma Brown,emma.brown@example.com,+491701112277,VIP,Media,"vip,media"
