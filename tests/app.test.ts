@@ -7,13 +7,14 @@ process.env.QR_TOKEN_BYTES = "32";
 process.env.DEFAULT_EVENT_SLUG = "sample-2026";
 
 import bcrypt from "bcryptjs";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FastifyInstance } from "fastify";
 import { PrismaClient, UserRole } from "@prisma/client";
-import { buildApp } from "../src/app";
-import { setupTestDatabase } from "./helpers";
+import { buildTestApp, loginAs, setupTestDatabase } from "./helpers";
 import { syncRegistrantsFromSource } from "../src/modules/sync/sync-service";
-import { issueQrForTicket, revokeQrToken } from "../src/modules/tickets/qr-service";
+import { revokeQrToken } from "../src/modules/tickets/qr-service";
 import { RegistrationSource } from "../src/modules/sync/google-sheets-provider";
+import { startGoogleSheetsSyncPolling } from "../src/modules/sync/sync-poller";
 
 class FakeRegistrationSource implements RegistrationSource {
   constructor(private readonly rows: Array<Record<string, string | number | undefined>>) {}
@@ -34,6 +35,7 @@ class FakeRegistrationSource implements RegistrationSource {
 
 describe("QR event backend", () => {
   let prisma: PrismaClient;
+  let app: FastifyInstance;
 
   beforeEach(async () => {
     prisma = await setupTestDatabase();
@@ -62,6 +64,12 @@ describe("QR event backend", () => {
         role: UserRole.SCANNER,
       },
     });
+
+    app = await buildTestApp(prisma);
+  });
+
+  afterEach(async () => {
+    await app.close();
   });
 
   it("syncs new registrants without reprocessing old rows", async () => {
@@ -89,17 +97,7 @@ describe("QR event backend", () => {
       where: { ticketId: ticket.id, status: "ACTIVE" },
       orderBy: { issuedAt: "desc" },
     });
-    const app = buildApp();
-    await app.ready();
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/v1/auth/login",
-      payload: {
-        email: "scanner@example.com",
-        password: "ChangeMe123!",
-      },
-    });
-    const { token } = login.json();
+    const { token } = await loginAs(app, "scanner@example.com");
 
     const result = await app.inject({
       method: "POST",
@@ -124,17 +122,7 @@ describe("QR event backend", () => {
       where: { ticketId: ticket.id, status: "ACTIVE" },
       orderBy: { issuedAt: "desc" },
     });
-    const app = buildApp();
-    await app.ready();
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/v1/auth/login",
-      payload: {
-        email: "scanner@example.com",
-        password: "ChangeMe123!",
-      },
-    });
-    const { token } = login.json();
+    const { token } = await loginAs(app, "scanner@example.com");
 
     await app.inject({
       method: "POST",
@@ -164,17 +152,7 @@ describe("QR event backend", () => {
       orderBy: { issuedAt: "desc" },
     });
     await revokeQrToken(prisma, ticket.id, "Compromised");
-    const app = buildApp();
-    await app.ready();
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/v1/auth/login",
-      payload: {
-        email: "scanner@example.com",
-        password: "ChangeMe123!",
-      },
-    });
-    const { token } = login.json();
+    const { token } = await loginAs(app, "scanner@example.com");
 
     const response = await app.inject({
       method: "POST",
@@ -196,17 +174,7 @@ describe("QR event backend", () => {
       where: { ticketId: ticket.id, status: "ACTIVE" },
       orderBy: { issuedAt: "desc" },
     });
-    const app = buildApp();
-    await app.ready();
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/v1/auth/login",
-      payload: {
-        email: "scanner@example.com",
-        password: "ChangeMe123!",
-      },
-    });
-    const { token } = login.json();
+    const { token } = await loginAs(app, "scanner@example.com");
 
     const [first, second] = await Promise.all([
       app.inject({
@@ -226,5 +194,58 @@ describe("QR event backend", () => {
     const statuses = [first.json().status, second.json().status].sort();
     expect(statuses).toEqual(["already_used", "valid"]);
     expect(await prisma.checkIn.count()).toBe(1);
+  });
+
+  it("polls new sheet entries and auto-issues QR codes for them", async () => {
+    class MutableRegistrationSource implements RegistrationSource {
+      rows: Array<Record<string, string | number | undefined>> = [];
+
+      async listRows() {
+        return this.rows.map((row) => ({
+          rowNumber: Number(row.rowNumber),
+          timestamp: row.timestamp as string | undefined,
+          fullName: row.fullName as string | undefined,
+          email: row.email as string | undefined,
+          phone: row.phone as string | undefined,
+          ticketType: row.ticketType as string | undefined,
+          guestCategory: row.guestCategory as string | undefined,
+          tags: row.tags as string | undefined,
+        }));
+      }
+    }
+
+    const source = new MutableRegistrationSource();
+    const stopPolling = startGoogleSheetsSyncPolling({
+      prisma,
+      source,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+      config: {
+        DEFAULT_EVENT_SLUG: "sample-2026",
+        GOOGLE_SHEETS_ENABLED: true,
+        GOOGLE_SHEETS_POLL_INTERVAL_MS: 25,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await prisma.qrToken.count()).toBe(0);
+
+    source.rows = [
+      { rowNumber: 2, fullName: "Late Entry", email: "late@example.com" },
+    ];
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const registrant = await prisma.registrant.findFirst({ where: { email: "late@example.com" } });
+    const ticket = await prisma.ticket.findFirst({ where: { registrantId: registrant?.id } });
+
+    expect(registrant).toBeTruthy();
+    expect(ticket).toBeTruthy();
+    expect(await prisma.qrToken.count()).toBe(1);
+
+    stopPolling();
   });
 });

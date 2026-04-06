@@ -12,7 +12,18 @@ import { UserRole } from "@prisma/client";
 import { getAuthUser } from "../utils/auth-user";
 import { AppError } from "../utils/errors";
 
+function getDefaultEventSlug(app: FastifyInstance, eventSlug?: string) {
+  return eventSlug ?? app.config.DEFAULT_EVENT_SLUG;
+}
+
+function getPathParam<T extends string>(request: { params: unknown }, key: T) {
+  return (request.params as Record<T, string>)[key];
+}
+
 export function registerRoutes(app: FastifyInstance) {
+  const adminOnly = { preHandler: [app.authorize([UserRole.ADMIN])] };
+  const staffOnly = { preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])] };
+
   app.get("/", async () => ({
     name: "qr-event-entry",
     status: "ok",
@@ -41,20 +52,16 @@ export function registerRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/api/v1/sync/google-sheets", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/sync/google-sheets", adminOnly, async (request) => {
     const body = syncSchema.parse(request.body ?? {});
     return syncRegistrantsFromSource(
       app.prisma,
       new GoogleSheetsRegistrationSource(),
-      body.eventSlug ?? app.config.DEFAULT_EVENT_SLUG,
+      getDefaultEventSlug(app, body.eventSlug),
     );
   });
 
-  app.post("/api/v1/dev/load-sample-registrants", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/dev/load-sample-registrants", adminOnly, async (request) => {
     if (app.config.NODE_ENV === "production") {
       throw new AppError(404, "Not found");
     }
@@ -63,13 +70,11 @@ export function registerRoutes(app: FastifyInstance) {
     return syncRegistrantsFromSource(
       app.prisma,
       new SampleRegistrationSource(),
-      body.eventSlug ?? app.config.DEFAULT_EVENT_SLUG,
+      getDefaultEventSlug(app, body.eventSlug),
     );
   });
 
-  app.post("/api/v1/dev/import-sheet-rows", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/dev/import-sheet-rows", adminOnly, async (request) => {
     if (app.config.NODE_ENV === "production") {
       throw new AppError(404, "Not found");
     }
@@ -78,26 +83,22 @@ export function registerRoutes(app: FastifyInstance) {
     return syncRegistrantsFromSource(
       app.prisma,
       new PastedSheetRegistrationSource(body.rowsText),
-      body.eventSlug ?? app.config.DEFAULT_EVENT_SLUG,
+      getDefaultEventSlug(app, body.eventSlug),
     );
   });
 
-  app.post("/api/v1/tickets/issue-qr", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/tickets/issue-qr", adminOnly, async (request) => {
     const body = issueQrSchema.parse(request.body);
     return issueQrForTicket(app.prisma, body.ticketId, getAuthUser(request).sub);
   });
 
-  app.get("/api/v1/tickets/:ticketId/status", {
-    preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])],
-  }, async (request) => {
-    const ticketId = (request.params as { ticketId: string }).ticketId;
+  app.get("/api/v1/tickets/:ticketId/status", staffOnly, async (request) => {
+    const ticketId = getPathParam(request, "ticketId");
     return getTicketStatus(app.prisma, ticketId);
   });
 
   app.post("/api/v1/scans/validate", {
-    preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])],
+    ...staffOnly,
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (request) => {
     const body = scanValidationSchema.parse(request.body);
@@ -112,7 +113,7 @@ export function registerRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/v1/checkins/scan", {
-    preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])],
+    ...staffOnly,
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (request) => {
     const body = scanValidationSchema.parse(request.body);
@@ -126,9 +127,7 @@ export function registerRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/api/v1/checkins/manual", {
-    preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])],
-  }, async (request) => {
+  app.post("/api/v1/checkins/manual", staffOnly, async (request) => {
     const body = manualCheckInSchema.parse(request.body);
     const user = getAuthUser(request);
     return manualCheckIn(app.prisma, {
@@ -141,31 +140,23 @@ export function registerRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/api/v1/tickets/revoke-qr", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/tickets/revoke-qr", adminOnly, async (request) => {
     const body = revokeQrSchema.parse(request.body);
     await revokeQrToken(app.prisma, body.ticketId, body.reason, getAuthUser(request).sub);
     return { success: true };
   });
 
-  app.post("/api/v1/tickets/reissue-qr", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.post("/api/v1/tickets/reissue-qr", adminOnly, async (request) => {
     const body = revokeQrSchema.parse(request.body);
     return reissueQrToken(app.prisma, body.ticketId, body.reason, getAuthUser(request).sub);
   });
 
-  app.get("/api/v1/registrants/lookup", {
-    preHandler: [app.authorize([UserRole.ADMIN, UserRole.SCANNER])],
-  }, async (request) => {
+  app.get("/api/v1/registrants/lookup", staffOnly, async (request) => {
     const query = statusLookupSchema.parse(request.query);
     return lookupRegistrants(app.prisma, query.eventSlug, query.query);
   });
 
-  app.get("/api/v1/audit", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.get("/api/v1/audit", adminOnly, async (request) => {
     const { ticketId, eventId } = request.query as { ticketId?: string; eventId?: string };
     return app.prisma.auditLog.findMany({
       where: {
@@ -177,9 +168,7 @@ export function registerRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/api/v1/checkins/export", {
-    preHandler: [app.authorize([UserRole.ADMIN])],
-  }, async (request) => {
+  app.get("/api/v1/checkins/export", adminOnly, async (request) => {
     const { eventSlug } = request.query as { eventSlug: string };
     const event = await app.prisma.event.findUniqueOrThrow({ where: { slug: eventSlug } });
     const results = await app.prisma.ticket.findMany({

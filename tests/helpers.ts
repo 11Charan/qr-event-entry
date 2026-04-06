@@ -1,4 +1,6 @@
 import { PrismaClient } from "@prisma/client";
+import { FastifyInstance } from "fastify";
+import { buildApp } from "../src/app";
 import { resetPrismaClient, getPrismaClient } from "../src/config/prisma";
 
 export async function setupTestDatabase() {
@@ -23,4 +25,20 @@ export async function setupTestDatabase() {
   await prisma.user.deleteMany();
 
   return prisma;
+}
+
+export async function buildTestApp(prisma: PrismaClient) {
+  const app = buildApp({ prisma });
+  await app.ready();
+  return app;
+}
+
+export async function loginAs(app: FastifyInstance, email: string, password = "ChangeMe123!") {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email, password },
+  });
+
+  return response.json() as { token: string };
 }

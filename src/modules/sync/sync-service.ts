@@ -5,6 +5,8 @@ import { writeAuditLog } from "../audit/audit-service";
 import { ensureActiveQrForTicket } from "../tickets/qr-service";
 import { RegistrationSource } from "./google-sheets-provider";
 
+type SyncRow = Awaited<ReturnType<RegistrationSource["listRows"]>>[number];
+
 function parseTimestamp(value?: string) {
   if (!value) {
     return undefined;
@@ -12,6 +14,20 @@ function parseTimestamp(value?: string) {
 
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function buildRegistrantPayload(row: SyncRow) {
+  const rawDataJson = JSON.stringify(row);
+  return {
+    fullName: row.fullName!,
+    email: row.email!.toLowerCase(),
+    phone: row.phone,
+    guestCategory: row.guestCategory,
+    tags: row.tags,
+    responseTimestamp: parseTimestamp(row.timestamp),
+    syncChecksum: createChecksum(rawDataJson),
+    rawDataJson,
+  };
 }
 
 export async function syncRegistrantsFromSource(
@@ -45,66 +61,57 @@ export async function syncRegistrantsFromSource(
       continue;
     }
 
-    const rawData = JSON.stringify(row);
-    const registrant = await prisma.registrant.upsert({
-      where: {
-        eventId_sheetRowRef: {
+    const registrantData = buildRegistrantPayload(row);
+
+    await prisma.$transaction(async (tx) => {
+      const registrant = await tx.registrant.upsert({
+        where: {
+          eventId_sheetRowRef: {
+            eventId: event.id,
+            sheetRowRef: `${row.rowNumber}`,
+          },
+        },
+        update: registrantData,
+        create: {
           eventId: event.id,
           sheetRowRef: `${row.rowNumber}`,
+          sheetRowNumber: row.rowNumber,
+          ...registrantData,
         },
-      },
-      update: {
-        fullName: row.fullName,
-        email: row.email.toLowerCase(),
-        phone: row.phone,
-        guestCategory: row.guestCategory,
-        tags: row.tags,
-        responseTimestamp: parseTimestamp(row.timestamp),
-        syncChecksum: createChecksum(rawData),
-        rawDataJson: rawData,
-      },
-      create: {
-        eventId: event.id,
-        sheetRowRef: `${row.rowNumber}`,
-        sheetRowNumber: row.rowNumber,
-        fullName: row.fullName,
-        email: row.email.toLowerCase(),
-        phone: row.phone,
-        guestCategory: row.guestCategory,
-        tags: row.tags,
-        responseTimestamp: parseTimestamp(row.timestamp),
-        syncChecksum: createChecksum(rawData),
-        rawDataJson: rawData,
-      },
-    });
+      });
 
-    const ticket = await prisma.ticket.upsert({
-      where: { registrantId: registrant.id },
-      update: {
-        ticketType: row.ticketType || "standard",
-      },
-      create: {
+      const ticket = await tx.ticket.upsert({
+        where: { registrantId: registrant.id },
+        update: {
+          ticketType: row.ticketType || "standard",
+        },
+        create: {
+          eventId: event.id,
+          registrantId: registrant.id,
+          ticketType: row.ticketType || "standard",
+          ticketStatus: TicketStatus.ACTIVE,
+        },
+      });
+
+      await ensureActiveQrForTicket(tx as PrismaClient, ticket.id);
+
+      await writeAuditLog(tx as PrismaClient, {
+        action: AuditAction.REGISTRANT_SYNCED,
+        outcome: AuditOutcome.SUCCESS,
         eventId: event.id,
         registrantId: registrant.id,
-        ticketType: row.ticketType || "standard",
-        ticketStatus: TicketStatus.ACTIVE,
-      },
+        message: "Registrant synced from Google Sheets",
+        metadata: { rowNumber: row.rowNumber },
+      });
     });
-
-    await ensureActiveQrForTicket(prisma, ticket.id);
 
     processed += 1;
-    await writeAuditLog(prisma, {
-      action: AuditAction.REGISTRANT_SYNCED,
-      outcome: AuditOutcome.SUCCESS,
-      eventId: event.id,
-      registrantId: registrant.id,
-      message: "Registrant synced from Google Sheets",
-      metadata: { rowNumber: row.rowNumber },
-    });
   }
 
-  const lastRowNumber = rows.length ? rows[rows.length - 1].rowNumber : syncState.lastSheetRowNumber;
+  const lastRowNumber = rows.reduce(
+    (currentMax, row) => Math.max(currentMax, row.rowNumber),
+    syncState.lastSheetRowNumber,
+  );
   await prisma.syncState.update({
     where: { id: syncStateId },
     data: {

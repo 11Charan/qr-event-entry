@@ -1,5 +1,3 @@
-import fs from "fs/promises";
-import path from "path";
 import QRCode from "qrcode";
 import { AuditAction, AuditOutcome, PrismaClient, QrStatus, TicketStatus } from "@prisma/client";
 import { env } from "../../config/env";
@@ -42,8 +40,6 @@ export async function issueQrForTicket(prisma: PrismaClient, ticketId: string, c
     margin: 2,
     width: 400,
   });
-
-  await fs.mkdir(path.resolve(env.QR_CODE_IMAGE_DIR), { recursive: true });
 
   const qrToken = await prisma.qrToken.create({
     data: {
