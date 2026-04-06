@@ -3,6 +3,25 @@ import { z } from "zod";
 
 dotenv.config();
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+
+    if (["false", "0", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(3000),
@@ -19,13 +38,13 @@ const envSchema = z.object({
   GOOGLE_SHEETS_CLIENT_EMAIL: z.string().optional().default(""),
   GOOGLE_SHEETS_PRIVATE_KEY: z.string().optional().default(""),
   GOOGLE_SHEETS_POLL_INTERVAL_MS: z.coerce.number().default(60000),
-  GOOGLE_SHEETS_ENABLED: z.coerce.boolean().default(false),
-  EMAIL_ENABLED: z.coerce.boolean().default(false),
+  GOOGLE_SHEETS_ENABLED: booleanFromEnv.default(false),
+  EMAIL_ENABLED: booleanFromEnv.default(false),
   EMAIL_FROM: z.string().default("noreply@example.com"),
   EMAIL_REPLY_TO: z.string().optional().default(""),
   SMTP_HOST: z.string().optional().default(""),
   SMTP_PORT: z.coerce.number().default(587),
-  SMTP_SECURE: z.coerce.boolean().default(false),
+  SMTP_SECURE: booleanFromEnv.default(false),
   SMTP_USER: z.string().optional().default(""),
   SMTP_PASS: z.string().optional().default(""),
 });

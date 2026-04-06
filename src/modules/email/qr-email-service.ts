@@ -13,6 +13,17 @@ type QrEmailPayload = {
 
 type QrEmailSender = (input: QrEmailPayload) => Promise<void>;
 
+type PendingQrEmailResult = {
+  attempted: number;
+  sent: number;
+  failed: number;
+  failures: Array<{
+    qrTokenId: string;
+    email: string;
+    message: string;
+  }>;
+};
+
 let transporter: nodemailer.Transporter | undefined;
 
 function getTransporter() {
@@ -138,9 +149,9 @@ export async function deliverPendingQrEmails(
     limit?: number;
   },
   sender: QrEmailSender = sendTicketQrEmail,
-) {
+) : Promise<PendingQrEmailResult> {
   if (!env.EMAIL_ENABLED) {
-    return { attempted: 0, sent: 0, failed: 0 };
+    return { attempted: 0, sent: 0, failed: 0, failures: [] };
   }
 
   const event = await getEventBySlug(prisma, input.eventSlug);
@@ -154,12 +165,20 @@ export async function deliverPendingQrEmails(
         ticketStatus: TicketStatus.ACTIVE,
       },
     },
+    include: {
+      ticket: {
+        include: {
+          registrant: true,
+        },
+      },
+    },
     orderBy: { issuedAt: "asc" },
     take: input.limit ?? 50,
   });
 
   let sent = 0;
   let failed = 0;
+  const failures: PendingQrEmailResult["failures"] = [];
 
   for (const qrToken of pendingTokens) {
     try {
@@ -167,8 +186,13 @@ export async function deliverPendingQrEmails(
       if (delivered) {
         sent += 1;
       }
-    } catch {
+    } catch (error) {
       failed += 1;
+      failures.push({
+        qrTokenId: qrToken.id,
+        email: qrToken.ticket.registrant.email,
+        message: error instanceof Error ? error.message : "Unknown email delivery error",
+      });
     }
   }
 
@@ -176,5 +200,6 @@ export async function deliverPendingQrEmails(
     attempted: pendingTokens.length,
     sent,
     failed,
+    failures,
   };
 }

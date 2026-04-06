@@ -45,6 +45,7 @@ export function startGoogleSheetsSyncPolling(options: SyncPollerOptions) {
           emailsAttempted: emailResult.attempted,
           emailsSent: emailResult.sent,
           emailFailures: emailResult.failed,
+          emailFailureDetails: emailResult.failures,
         }, "Completed Google Sheets sync tick");
       }
     } catch (error) {
